@@ -4,8 +4,9 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "rea
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Grid, Sky, Environment, Html } from "@react-three/drei";
 import * as THREE from "three";
-import { Car } from "./Car";
+import { Car, type VehicleType } from "./Car";
 import { Trajectory, VelocityArrow } from "./Trajectory";
+import { CrashEffects, ImpactMarker, SkidMarks } from "./CrashEffects";
 import { computeFrame, sampleTrajectory, type Scenario, type Frame } from "@/lib/simulation";
 import {
   computeAiFrame,
@@ -14,6 +15,13 @@ import {
   type AiScenario,
   type Infrastructure,
 } from "@/lib/aiSimulation";
+
+const KNOWN_TYPES: VehicleType[] = ["sedan", "suv", "camioneta", "hatchback", "deportivo", "camion"];
+function resolveVehicleType(raw: string | undefined, fallback: VehicleType): VehicleType {
+  if (!raw) return fallback;
+  const t = raw.toLowerCase().trim();
+  return (KNOWN_TYPES as string[]).includes(t) ? (t as VehicleType) : fallback;
+}
 
 export type CameraMode = "orbit" | "chase-a" | "chase-b" | "top" | "side" | "cockpit-a" | "dramatic";
 
@@ -159,36 +167,16 @@ function Environment3D({ infrastructure = "interseccion_cruciforme" }: { infrast
   );
 }
 
-function ImpactBurst({ position, active, scale }: { position: THREE.Vector3; active: boolean; scale: number }) {
-  const ref = useRef<THREE.Mesh>(null!);
-  useFrame((_, dt) => {
-    if (!ref.current) return;
-    const target = active ? scale : 0;
-    ref.current.scale.lerp(new THREE.Vector3(target, target, target), Math.min(1, dt * 4));
-    (ref.current.material as THREE.MeshStandardMaterial).opacity = active ? 0.7 : 0;
-  });
-  return (
-    <mesh ref={ref} position={position}>
-      <sphereGeometry args={[1, 20, 20]} />
-      <meshStandardMaterial
-        color="#ffb84b"
-        emissive="#ff6b2b"
-        emissiveIntensity={2.2}
-        transparent
-        opacity={0}
-      />
-    </mesh>
-  );
-}
-
 function CameraDirector({
   mode,
   frame,
   orbitTargetRef,
+  shakeRef,
 }: {
   mode: CameraMode;
   frame: Frame;
   orbitTargetRef: React.MutableRefObject<THREE.Vector3>;
+  shakeRef: React.MutableRefObject<number>;
 }) {
   const { camera } = useThree();
 
@@ -247,6 +235,14 @@ function CameraDirector({
       camera.position.lerp(want, lerp);
       camera.lookAt(target);
     }
+
+    // Apply post-lerp shake, decaying towards 0
+    if (shakeRef.current > 0.001) {
+      camera.position.x += (Math.random() - 0.5) * shakeRef.current * 0.4;
+      camera.position.y += (Math.random() - 0.5) * shakeRef.current * 0.4;
+      camera.position.z += (Math.random() - 0.5) * shakeRef.current * 0.4;
+      shakeRef.current = Math.max(0, shakeRef.current - dt * 1.8);
+    }
   });
 
   return null;
@@ -274,8 +270,37 @@ export const CrashScene = forwardRef<CrashSceneHandle, Props>(function CrashScen
   );
   const progress = time / scenario.duration;
   const orbitTargetRef = useRef(new THREE.Vector3(0, 0, 0));
+  const shakeRef = useRef(0);
+  const wasImpactedRef = useRef(false);
   const infra: Infrastructure = infrastructure ?? "interseccion_cruciforme";
   const lightingKind = lighting ?? "daylight";
+
+  // Trigger a shake pulse on the impact frame's rising edge
+  useEffect(() => {
+    if (frame.impacted && !wasImpactedRef.current) {
+      shakeRef.current = 1.5;
+      wasImpactedRef.current = true;
+    } else if (!frame.impacted && wasImpactedRef.current) {
+      wasImpactedRef.current = false;
+    }
+  }, [frame.impacted]);
+
+  const aiPayload = isAi ? (scenario as AiScenario).ai : null;
+  const typeA = resolveVehicleType(aiPayload?.v1_tipo, "sedan");
+  const typeB = resolveVehicleType(aiPayload?.v2_tipo, isAi ? "suv" : "sedan");
+
+  // Approx wheel spin from vehicle speed (rad/s from m/s, wheel radius ~0.3m)
+  const spinA = Math.min(60, Math.hypot(frame.a.velocity.x, frame.a.velocity.z) / 0.3);
+  const spinB = Math.min(60, Math.hypot(frame.b.velocity.x, frame.b.velocity.z) / 0.3);
+
+  // Brake glow: bright pre-impact when decelerating, dim afterward
+  const preImpact = time < scenario.impactTime;
+  const brakeGlow = preImpact ? 1.6 : 0.8;
+
+  // Deformation ramps from 0 to 1 in the first 0.4s after impact
+  const deformation = frame.impacted
+    ? Math.min(1, (time - scenario.impactTime) / 0.4)
+    : 0;
 
   const isNight = lightingKind === "night";
   const isSunset = lightingKind === "sunset";
@@ -320,8 +345,36 @@ export const CrashScene = forwardRef<CrashSceneHandle, Props>(function CrashScen
 
       <Environment3D infrastructure={infra} />
 
-      <Car state={frame.a} color={scenario.a.color} />
-      <Car state={frame.b} color={scenario.b.color} />
+      <Car
+        state={frame.a}
+        color={scenario.a.color}
+        type={typeA}
+        wheelSpin={spinA}
+        brakeGlow={brakeGlow}
+        deformation={deformation * 0.7}
+      />
+      <Car
+        state={frame.b}
+        color={scenario.b.color}
+        type={typeB}
+        wheelSpin={spinB}
+        brakeGlow={brakeGlow}
+        deformation={deformation}
+      />
+
+      {/* Skid marks (pre-impact tire trails for both vehicles) */}
+      <SkidMarks
+        points={trajectories.a}
+        impactTime={scenario.impactTime}
+        duration={scenario.duration}
+        progress={progress}
+      />
+      <SkidMarks
+        points={trajectories.b}
+        impactTime={scenario.impactTime}
+        duration={scenario.duration}
+        progress={progress}
+      />
 
       {showTrajectories && (
         <>
@@ -332,15 +385,11 @@ export const CrashScene = forwardRef<CrashSceneHandle, Props>(function CrashScen
         </>
       )}
 
-      {frame.impactPoint && (
-        <ImpactBurst
-          position={new THREE.Vector3(frame.impactPoint.x, 0.8, frame.impactPoint.z)}
-          active={frame.impacted && time - scenario.impactTime < 0.8}
-          scale={2.2}
-        />
-      )}
+      {/* Impact effects: particles, debris, shockwave, burst light */}
+      <CrashEffects impactPoint={frame.impactPoint} active={frame.impacted} />
+      <ImpactMarker position={frame.impactPoint} active={frame.impacted && time - scenario.impactTime < 0.8} />
 
-      <CameraDirector mode={cameraMode} frame={frame} orbitTargetRef={orbitTargetRef} />
+      <CameraDirector mode={cameraMode} frame={frame} orbitTargetRef={orbitTargetRef} shakeRef={shakeRef} />
       {cameraMode === "orbit" && (
         <OrbitControls
           makeDefault

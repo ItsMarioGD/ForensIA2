@@ -77,10 +77,29 @@ function resolveColor(raw: string | undefined, fallback: string): string {
   return COLOR_MAP[trimmed] ?? fallback;
 }
 
+// Convert AI raw frames (v1_y = north/south in the story, v1_angulo in degrees)
+// into our internal convention: world z = -v1_y (so "hacia el norte" maps to
+// −z in Three.js), heading = -(angulo * PI/180) — same mapping the original
+// ForensAI frontend applied when placing meshes.
+function normalizeFrames(raw: AiFrame[]): AiFrame[] {
+  return raw
+    .slice()
+    .sort((a, b) => a.segundo - b.segundo)
+    .map((f) => ({
+      segundo: f.segundo,
+      v1_x: f.v1_x,
+      v1_y: -f.v1_y,
+      v1_angulo: -((f.v1_angulo * Math.PI) / 180),
+      v2_x: f.v2_x,
+      v2_y: -f.v2_y,
+      v2_angulo: -((f.v2_angulo * Math.PI) / 180),
+    }));
+}
+
 // Build an AiScenario from raw payload. All physics-based fields (mass, etc.)
 // are still populated so the shared telemetry code keeps working.
 export function scenarioFromAi(payload: AiPayload): AiScenario {
-  const frames = [...payload.animacion_actores].sort((a, b) => a.segundo - b.segundo);
+  const frames = normalizeFrames(payload.animacion_actores);
   if (frames.length < 2) throw new Error("Se requieren al menos 2 keyframes.");
 
   const first = frames[0];
