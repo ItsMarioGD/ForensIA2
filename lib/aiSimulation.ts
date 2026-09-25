@@ -47,6 +47,7 @@ export type AiPayload = {
 export type AiScenario = Scenario & {
   ai: AiPayload;
   keyframes: AiFrame[];
+  fixedImpactPoint: Vec3;
 };
 
 // Named CSS colors used by the PHP payload (rojo/azul/etc.) → hex fallback
@@ -77,6 +78,8 @@ function resolveColor(raw: string | undefined, fallback: string): string {
   return COLOR_MAP[trimmed] ?? fallback;
 }
 
+import { VEHICLE_HALF } from "./simulation";
+
 // Convert AI raw frames (v1_y = north/south in the story, v1_angulo in degrees)
 // into our internal convention: world z = -v1_y (so "hacia el norte" maps to
 // −z in Three.js), heading = -(angulo * PI/180) — same mapping the original
@@ -96,11 +99,75 @@ function normalizeFrames(raw: AiFrame[]): AiFrame[] {
     }));
 }
 
+// The AI often produces trajectories where the two vehicles pass wide of each
+// other or "impact" from meters apart. This rewrites the keyframes so at the
+// closest-approach frame the two vehicles' centers are exactly at 2·HALF along
+// the line that connects them (bumpers touching). Frames adjacent to the
+// impact frame are blended with a triangular window so the correction fades
+// smoothly across the animation instead of teleporting anyone.
+function enforceCollision(frames: AiFrame[]): {
+  frames: AiFrame[];
+  impactIndex: number;
+  impactPoint: { x: number; z: number };
+} {
+  // 1. Find frame with minimum inter-vehicle center distance.
+  let minDist = Infinity;
+  let k = 0;
+  for (let i = 0; i < frames.length; i++) {
+    const dx = frames[i].v1_x - frames[i].v2_x;
+    const dz = frames[i].v1_y - frames[i].v2_y;
+    const d = Math.sqrt(dx * dx + dz * dz);
+    if (d < minDist) {
+      minDist = d;
+      k = i;
+    }
+  }
+
+  // 2. At frame k, compute where each vehicle should be so bumpers touch.
+  const f = frames[k];
+  const dx = f.v1_x - f.v2_x;
+  const dz = f.v1_y - f.v2_y;
+  const dist = Math.max(1e-4, Math.sqrt(dx * dx + dz * dz));
+  const ux = dx / dist;
+  const uz = dz / dist;
+  const midX = (f.v1_x + f.v2_x) / 2;
+  const midZ = (f.v1_y + f.v2_y) / 2;
+  const targetA = { x: midX + ux * VEHICLE_HALF, z: midZ + uz * VEHICLE_HALF };
+  const targetB = { x: midX - ux * VEHICLE_HALF, z: midZ - uz * VEHICLE_HALF };
+  const deltaAx = targetA.x - f.v1_x;
+  const deltaAz = targetA.z - f.v1_y;
+  const deltaBx = targetB.x - f.v2_x;
+  const deltaBz = targetB.z - f.v2_y;
+
+  // 3. Apply a triangular blend of the correction across all frames.
+  //    Weight is 1.0 at frame k, falling linearly to 0 at the ends.
+  const N = frames.length;
+  const out = frames.map((raw, i) => {
+    const w = 1 - Math.abs(i - k) / Math.max(1, Math.max(k, N - 1 - k));
+    const wc = Math.max(0, w);
+    return {
+      ...raw,
+      v1_x: raw.v1_x + deltaAx * wc,
+      v1_y: raw.v1_y + deltaAz * wc,
+      v2_x: raw.v2_x + deltaBx * wc,
+      v2_y: raw.v2_y + deltaBz * wc,
+    };
+  });
+
+  return {
+    frames: out,
+    impactIndex: k,
+    impactPoint: { x: midX, z: midZ },
+  };
+}
+
 // Build an AiScenario from raw payload. All physics-based fields (mass, etc.)
 // are still populated so the shared telemetry code keeps working.
 export function scenarioFromAi(payload: AiPayload): AiScenario {
-  const frames = normalizeFrames(payload.animacion_actores);
-  if (frames.length < 2) throw new Error("Se requieren al menos 2 keyframes.");
+  const normalized = normalizeFrames(payload.animacion_actores);
+  if (normalized.length < 2) throw new Error("Se requieren al menos 2 keyframes.");
+  const enforced = enforceCollision(normalized);
+  const frames = enforced.frames;
 
   const first = frames[0];
   const last = frames[frames.length - 1];
@@ -121,18 +188,11 @@ export function scenarioFromAi(payload: AiPayload): AiScenario {
     z: (frames[1].v2_y - frames[0].v2_y) / dt0,
   };
 
-  // Detect approximate impact time: when distance between vehicles is minimal
-  let impactTime = duration / 2;
-  let minDist = Infinity;
-  for (const f of frames) {
-    const dx = f.v1_x - f.v2_x;
-    const dz = f.v1_y - f.v2_y;
-    const d = Math.sqrt(dx * dx + dz * dz);
-    if (d < minDist) {
-      minDist = d;
-      impactTime = f.segundo - first.segundo;
-    }
-  }
+  // Impact time = the frame at which vehicles collide (already enforced).
+  const impactTime = Math.max(
+    0,
+    Math.min(duration, frames[enforced.impactIndex].segundo - first.segundo)
+  );
 
   const scenario: AiScenario = {
     id: "ai",
@@ -159,6 +219,7 @@ export function scenarioFromAi(payload: AiPayload): AiScenario {
     },
     ai: payload,
     keyframes: frames,
+    fixedImpactPoint: { x: enforced.impactPoint.x, y: 0.6, z: enforced.impactPoint.z },
   };
   return scenario;
 }
@@ -211,15 +272,16 @@ export function computeAiFrame(scenario: AiScenario, tRaw: number): Frame {
     z: (f1.v2_y - f0.v2_y) / span,
   };
 
-  const impacted = t >= scenario.impactTime;
-  let impactPoint: Vec3 | null = null;
-  if (impacted) {
-    impactPoint = {
-      x: (posA.x + posB.x) / 2,
-      y: 0.6,
-      z: (posA.z + posB.z) / 2,
-    };
-  }
+  // Impact fires once the vehicle bodies overlap (distance <= 2·HALF + margin)
+  // OR the AI-stated impact time has passed. The impact point is the fixed
+  // meeting point stored on the scenario (computed by enforceCollision) so it
+  // stays anchored even after the vehicles slide past each other.
+  const cdx = posA.x - posB.x;
+  const cdz = posA.z - posB.z;
+  const centerDist = Math.sqrt(cdx * cdx + cdz * cdz);
+  const collided = centerDist <= VEHICLE_HALF * 2 + 0.3;
+  const impacted = collided || t >= scenario.impactTime;
+  const impactPoint: Vec3 | null = impacted ? scenario.fixedImpactPoint : null;
 
   const a: VehicleState = { position: posA, velocity: velA, heading: headingA, spinning: 0 };
   const b: VehicleState = { position: posB, velocity: velB, heading: headingB, spinning: 0 };
