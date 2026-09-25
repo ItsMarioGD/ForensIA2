@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ForensIA · Reconstrucción Forense de Accidentes</title>
+  <meta name="description" content="Plataforma de IA local para la reconstrucción forense de accidentes viales. Describe el siniestro y obtén una simulación 3D interactiva y un dictamen técnico.">
+  <meta name="theme-color" content="#050b14">
+
+  <!-- Google Fonts: Outfit + JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+
+  <!-- Three.js r128 (local, sin dependencia de internet) -->
+  <script src="vendor/three.min.js"></script>
+
+  <!-- React 18 (local) -->
+  <script crossorigin src="vendor/react.production.min.js"></script>
+  <script crossorigin src="vendor/react-dom.production.min.js"></script>
+
+  <!-- Babel (JSX transpilation in browser, local) -->
+  <script src="vendor/babel.min.js"></script>
+
+  <!-- Custom CSS -->
+  <link rel="stylesheet" href="styles.css">
+
+  <!-- Mostrar errores en pantalla (en vez de quedar en blanco) -->
+  <script>
+    // Avisos benignos que el navegador emite como "error" pero no rompen nada
+    var IGNORE_MSGS = [
+      'ResizeObserver loop completed with undelivered notifications',
+      'ResizeObserver loop limit exceeded'
+    ];
+    function isIgnorable(msg) {
+      if (!msg) return false;
+      for (var i = 0; i < IGNORE_MSGS.length; i++) {
+        if (msg.indexOf(IGNORE_MSGS[i]) !== -1) return true;
+      }
+      return false;
+    }
+    window.addEventListener('error', function (e) {
+      if (isIgnorable(e.message || (e.error && e.error.message))) return;
+      var box = document.getElementById('errbox');
+      if (!box) {
+        box = document.createElement('pre');
+        box.id = 'errbox';
+        box.style.cssText = 'position:fixed;left:0;top:0;right:0;z-index:9999;margin:0;padding:12px;background:#3b0d0d;color:#ffb4b4;font:13px monospace;white-space:pre-wrap;max-height:50%;overflow:auto;';
+        document.body.appendChild(box);
+      }
+      box.textContent += '\n[ERROR] ' + (e.message || e.error) + (e.filename ? '  (' + e.filename + ':' + e.lineno + ')' : '');
+    });
+    window.addEventListener('unhandledrejection', function (e) {
+      if (isIgnorable(e.reason && e.reason.message ? e.reason.message : String(e.reason))) return;
+      var box = document.getElementById('errbox');
+      if (!box) {
+        box = document.createElement('pre');
+        box.id = 'errbox';
+        box.style.cssText = 'position:fixed;left:0;top:0;right:0;z-index:9999;margin:0;padding:12px;background:#3b0d0d;color:#ffb4b4;font:13px monospace;white-space:pre-wrap;max-height:50%;overflow:auto;';
+        document.body.appendChild(box);
+      }
+      box.textContent += '\n[PROMISE] ' + (e.reason && e.reason.message ? e.reason.message : e.reason);
+    });
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- Inline script to define three orbit controls helper before app -->
+  <script>
+    // Simple OrbitControls equivalent using mouse events
+    window.SimpleOrbitControls = function(camera, domElement) {
+      this.camera = camera;
+      this.target = new THREE.Vector3(0, 0, 0);
+      this.enabled = true;
+
+      let isMouseDown = false;
+      let prevMouse = { x: 0, y: 0 };
+      let spherical = { theta: Math.PI / 4, phi: Math.PI / 3, radius: 80 };
+
+      const updateCamera = () => {
+        const x = spherical.radius * Math.sin(spherical.phi) * Math.sin(spherical.theta);
+        const y = spherical.radius * Math.cos(spherical.phi);
+        const z = spherical.radius * Math.sin(spherical.phi) * Math.cos(spherical.theta);
+        camera.position.set(x + this.target.x, y + this.target.y, z + this.target.z);
+        camera.lookAt(this.target);
+      };
+
+      domElement.addEventListener('mousedown', (e) => { if (this.enabled) { isMouseDown = true; prevMouse = { x: e.clientX, y: e.clientY }; }});
+      domElement.addEventListener('mousemove', (e) => {
+        if (!isMouseDown || !this.enabled) return;
+        const dx = e.clientX - prevMouse.x;
+        const dy = e.clientY - prevMouse.y;
+        spherical.theta -= dx * 0.01;
+        spherical.phi = Math.max(0.1, Math.min(Math.PI * 0.9, spherical.phi + dy * 0.01));
+        prevMouse = { x: e.clientX, y: e.clientY };
+        updateCamera();
+      });
+      domElement.addEventListener('mouseup', () => { isMouseDown = false; });
+      domElement.addEventListener('wheel', (e) => {
+        if (!this.enabled) return;
+        spherical.radius = Math.max(20, Math.min(200, spherical.radius + e.deltaY * 0.1));
+        updateCamera();
+      });
+      domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+
+      this.update = updateCamera;
+      this.reset = () => {
+        spherical = { theta: Math.PI / 4, phi: Math.PI / 3, radius: 80 };
+        updateCamera();
+      };
+      updateCamera();
+    };
+  </script>
+
+  <!-- Main App (React + JSX via Babel).
+       Note: only the `react` preset is used. Adding `env` makes Babel inject
+       ES-module `import` statements for its runtime helpers, which the browser
+       then rejects with "Cannot use import statement outside a module" when
+       Babel appendChilds the transpiled script. Modern browsers already handle
+       every non-JSX construct in app.js natively, so `react` alone is enough. -->
+  <script type="text/babel" data-presets="react" src="app.js"></script>
+
+  <!-- ForensIA2 addendum: floating "Grabar MP4" button that captures the
+       Three.js canvas via MediaRecorder and downloads the result. -->
+  <script src="recorder.js"></script>
+</body>
+</html>
