@@ -113,8 +113,13 @@
     };
   </script>
 
-  <!-- Main App (React + JSX via Babel) -->
-  <script type="text/babel" data-presets="react,env" src="app.js"></script>
+  <!-- Main App (React + JSX via Babel).
+       Note: only the `react` preset is used. Adding `env` makes Babel inject
+       ES-module `import` statements for its runtime helpers, which the browser
+       then rejects with "Cannot use import statement outside a module" when
+       Babel appendChilds the transpiled script. Modern browsers already handle
+       every non-JSX construct in app.js natively, so `react` alone is enough. -->
+  <script type="text/babel" data-presets="react" src="app.js"></script>
 
   <!-- ForensIA2 addendum: floating "Grabar MP4" button that captures the
        Three.js canvas via MediaRecorder and downloads the result. -->
