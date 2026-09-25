@@ -407,6 +407,35 @@ select {
   outline: none;
 }
 
+textarea {
+  font-family: inherit;
+}
+
+textarea:focus {
+  border-color: rgba(75, 124, 255, 0.6) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.hud {
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.hud::-webkit-scrollbar {
+  width: 6px;
+}
+
+.hud::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
 .recording-indicator {
   position: absolute;
   top: 76px;

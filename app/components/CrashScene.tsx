@@ -7,14 +7,23 @@ import * as THREE from "three";
 import { Car } from "./Car";
 import { Trajectory, VelocityArrow } from "./Trajectory";
 import { computeFrame, sampleTrajectory, type Scenario, type Frame } from "@/lib/simulation";
+import {
+  computeAiFrame,
+  isAiScenario,
+  sampleAiTrajectory,
+  type AiScenario,
+  type Infrastructure,
+} from "@/lib/aiSimulation";
 
 export type CameraMode = "orbit" | "chase-a" | "chase-b" | "top" | "side" | "cockpit-a" | "dramatic";
 
 type Props = {
-  scenario: Scenario;
+  scenario: Scenario | AiScenario;
   time: number;
   cameraMode: CameraMode;
   showTrajectories: boolean;
+  infrastructure?: Infrastructure;
+  lighting?: "daylight" | "night" | "overcast" | "sunset";
   onCanvasReady?: (canvas: HTMLCanvasElement) => void;
 };
 
@@ -22,8 +31,8 @@ export type CrashSceneHandle = {
   getCanvas: () => HTMLCanvasElement | null;
 };
 
-// The road/environment
-function Environment3D() {
+// The road/environment — draws different layouts based on infrastructure type
+function Environment3D({ infrastructure = "interseccion_cruciforme" }: { infrastructure?: Infrastructure }) {
   return (
     <group>
       {/* Ground */}
@@ -31,38 +40,106 @@ function Environment3D() {
         <planeGeometry args={[400, 400]} />
         <meshStandardMaterial color="#1a1f33" roughness={1} />
       </mesh>
-      {/* Road strip east-west */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]} receiveShadow>
-        <planeGeometry args={[120, 10]} />
-        <meshStandardMaterial color="#2a2f45" roughness={0.95} />
-      </mesh>
-      {/* Road strip north-south */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.011, 0]} receiveShadow>
-        <planeGeometry args={[10, 120]} />
-        <meshStandardMaterial color="#2a2f45" roughness={0.95} />
-      </mesh>
-      {/* Lane markings east-west (dashed center) */}
-      {Array.from({ length: 20 }).map((_, i) => (
-        <mesh
-          key={`ew-${i}`}
-          rotation={[-Math.PI / 2, 0, 0]}
-          position={[-58 + i * 6, 0.02, 0]}
-        >
-          <planeGeometry args={[3, 0.18]} />
-          <meshStandardMaterial color="#eae4c3" emissive="#8f8560" emissiveIntensity={0.3} />
-        </mesh>
-      ))}
-      {/* Lane markings north-south */}
-      {Array.from({ length: 20 }).map((_, i) => (
-        <mesh
-          key={`ns-${i}`}
-          rotation={[-Math.PI / 2, 0, Math.PI / 2]}
-          position={[0, 0.02, -58 + i * 6]}
-        >
-          <planeGeometry args={[3, 0.18]} />
-          <meshStandardMaterial color="#eae4c3" emissive="#8f8560" emissiveIntensity={0.3} />
-        </mesh>
-      ))}
+
+      {infrastructure === "interseccion_cruciforme" && (
+        <>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]} receiveShadow>
+            <planeGeometry args={[120, 10]} />
+            <meshStandardMaterial color="#2a2f45" roughness={0.95} />
+          </mesh>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.011, 0]} receiveShadow>
+            <planeGeometry args={[10, 120]} />
+            <meshStandardMaterial color="#2a2f45" roughness={0.95} />
+          </mesh>
+          {Array.from({ length: 20 }).map((_, i) => (
+            <mesh
+              key={`ew-${i}`}
+              rotation={[-Math.PI / 2, 0, 0]}
+              position={[-58 + i * 6, 0.02, 0]}
+            >
+              <planeGeometry args={[3, 0.18]} />
+              <meshStandardMaterial color="#eae4c3" emissive="#8f8560" emissiveIntensity={0.3} />
+            </mesh>
+          ))}
+          {Array.from({ length: 20 }).map((_, i) => (
+            <mesh
+              key={`ns-${i}`}
+              rotation={[-Math.PI / 2, 0, Math.PI / 2]}
+              position={[0, 0.02, -58 + i * 6]}
+            >
+              <planeGeometry args={[3, 0.18]} />
+              <meshStandardMaterial color="#eae4c3" emissive="#8f8560" emissiveIntensity={0.3} />
+            </mesh>
+          ))}
+        </>
+      )}
+
+      {infrastructure === "recta" && (
+        <>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]} receiveShadow>
+            <planeGeometry args={[220, 14]} />
+            <meshStandardMaterial color="#2a2f45" roughness={0.95} />
+          </mesh>
+          {Array.from({ length: 40 }).map((_, i) => (
+            <mesh
+              key={`c-${i}`}
+              rotation={[-Math.PI / 2, 0, 0]}
+              position={[-108 + i * 6, 0.02, 0]}
+            >
+              <planeGeometry args={[3, 0.18]} />
+              <meshStandardMaterial color="#eae4c3" emissive="#8f8560" emissiveIntensity={0.3} />
+            </mesh>
+          ))}
+        </>
+      )}
+
+      {infrastructure === "curva" && (
+        <>
+          {Array.from({ length: 60 }).map((_, i) => {
+            const t = i / 60;
+            const angle = -Math.PI / 3 + t * (Math.PI * 0.9);
+            const R = 60;
+            const cx = Math.cos(angle) * R;
+            const cz = Math.sin(angle) * R;
+            return (
+              <mesh
+                key={`curve-${i}`}
+                rotation={[-Math.PI / 2, 0, angle + Math.PI / 2]}
+                position={[cx, 0.01 + i * 0.0002, cz]}
+                receiveShadow
+              >
+                <planeGeometry args={[6, 14]} />
+                <meshStandardMaterial color="#2a2f45" roughness={0.95} />
+              </mesh>
+            );
+          })}
+        </>
+      )}
+
+      {infrastructure === "rotonda" && (
+        <>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]} receiveShadow>
+            <ringGeometry args={[14, 26, 64]} />
+            <meshStandardMaterial color="#2a2f45" roughness={0.95} />
+          </mesh>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
+            <circleGeometry args={[13, 48]} />
+            <meshStandardMaterial color="#3a5a45" roughness={0.9} />
+          </mesh>
+          {[0, Math.PI / 2, Math.PI, -Math.PI / 2].map((a, i) => (
+            <mesh
+              key={`ent-${i}`}
+              rotation={[-Math.PI / 2, 0, a]}
+              position={[Math.cos(a) * 45, 0.011, Math.sin(a) * 45]}
+              receiveShadow
+            >
+              <planeGeometry args={[46, 10]} />
+              <meshStandardMaterial color="#2a2f45" roughness={0.95} />
+            </mesh>
+          ))}
+        </>
+      )}
+
       {/* Distance grid for scale */}
       <Grid
         position={[0, 0.03, 0]}
@@ -176,7 +253,7 @@ function CameraDirector({
 }
 
 export const CrashScene = forwardRef<CrashSceneHandle, Props>(function CrashScene(
-  { scenario, time, cameraMode, showTrajectories, onCanvasReady },
+  { scenario, time, cameraMode, showTrajectories, infrastructure, lighting, onCanvasReady },
   ref
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -185,10 +262,33 @@ export const CrashScene = forwardRef<CrashSceneHandle, Props>(function CrashScen
     getCanvas: () => canvasRef.current,
   }));
 
-  const frame = useMemo(() => computeFrame(scenario, time), [scenario, time]);
-  const trajectories = useMemo(() => sampleTrajectory(scenario, 300), [scenario]);
+  const isAi = isAiScenario(scenario);
+  const frame = useMemo(
+    () => (isAi ? computeAiFrame(scenario as AiScenario, time) : computeFrame(scenario, time)),
+    [scenario, time, isAi]
+  );
+  const trajectories = useMemo(
+    () =>
+      isAi ? sampleAiTrajectory(scenario as AiScenario, 300) : sampleTrajectory(scenario, 300),
+    [scenario, isAi]
+  );
   const progress = time / scenario.duration;
   const orbitTargetRef = useRef(new THREE.Vector3(0, 0, 0));
+  const infra: Infrastructure = infrastructure ?? "interseccion_cruciforme";
+  const lightingKind = lighting ?? "daylight";
+
+  const isNight = lightingKind === "night";
+  const isSunset = lightingKind === "sunset";
+  const isOvercast = lightingKind === "overcast";
+  const bgColor = isNight
+    ? "#03060f"
+    : isSunset
+    ? "#241227"
+    : isOvercast
+    ? "#1a1e2c"
+    : "#0a0e1a";
+  const sunIntensity = isNight ? 0.2 : isOvercast ? 0.7 : isSunset ? 0.9 : 1.15;
+  const ambient = isNight ? 0.15 : isOvercast ? 0.5 : 0.35;
 
   return (
     <Canvas
@@ -201,13 +301,13 @@ export const CrashScene = forwardRef<CrashSceneHandle, Props>(function CrashScen
         onCanvasReady?.(gl.domElement);
       }}
     >
-      <color attach="background" args={["#0a0e1a"]} />
-      <fog attach="fog" args={["#0a0e1a", 60, 220]} />
+      <color attach="background" args={[bgColor]} />
+      <fog attach="fog" args={[bgColor, 60, 220]} />
 
-      <ambientLight intensity={0.35} />
+      <ambientLight intensity={ambient} />
       <directionalLight
         position={[30, 40, 20]}
-        intensity={1.15}
+        intensity={sunIntensity}
         castShadow
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
@@ -218,7 +318,7 @@ export const CrashScene = forwardRef<CrashSceneHandle, Props>(function CrashScen
       />
       <hemisphereLight args={["#8fb0ff", "#20243a", 0.4]} />
 
-      <Environment3D />
+      <Environment3D infrastructure={infra} />
 
       <Car state={frame.a} color={scenario.a.color} />
       <Car state={frame.b} color={scenario.b.color} />
